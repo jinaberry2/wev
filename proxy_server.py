@@ -67,25 +67,45 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+        MAX_BODY = 65536  # 본문에서 정밀 타임스탬프 필드를 찾기 위한 최대 읽기 바이트
+
         try:
             t1 = time.time() * 1000
             try:
                 res = urllib.request.urlopen(req, timeout=8)
                 headers = res.headers
                 status = res.status
+                body_bytes = res.read(MAX_BODY)
             except urllib.error.HTTPError as e:
                 # 403/404 등도 응답 헤더(Date 포함)는 유효한 측정 데이터
                 headers = e.headers
                 status = e.code
+                try:
+                    body_bytes = e.read(MAX_BODY)
+                except Exception:
+                    body_bytes = b""
             t2 = time.time() * 1000
 
             server_date = headers.get("Date") if headers else None
+            content_type = headers.get("Content-Type") if headers else None
+            try:
+                body_text = body_bytes.decode("utf-8", errors="replace")
+            except Exception:
+                body_text = ""
+
             self._send_json(200, {
                 "ok": True,
                 "t1": t1,
                 "t2": t2,
                 "serverDate": server_date,
                 "status": status,
+                "contentType": content_type,
+                # 캐시(CDN) 응답이면 Date가 과거에 고정된 값일 수 있음 — 진단용
+                "cacheControl": headers.get("Cache-Control") if headers else None,
+                "age": headers.get("Age") if headers else None,
+                "xCache": (headers.get("X-Cache") or headers.get("CF-Cache-Status")) if headers else None,
+                # Date 헤더는 초 단위뿐이라, 본문에 더 정밀한(ms) 타임스탬프가 있으면 브라우저 쪽에서 찾아 씀
+                "bodySnippet": body_text[:MAX_BODY],
             })
         except Exception as e:
             self._send_json(200, {"ok": False, "error": str(e)})

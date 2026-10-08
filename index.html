@@ -224,19 +224,57 @@
     }
   }
 
+  // HTTP Date 헤더는 "초" 단위까지만 있습니다(밀리초 없음) — 표준 자체의 한계입니다.
+  // 그래서 먼저 응답 본문에서 밀리초 단위 타임스탬프를 찾아보고, 있으면 그걸 우선 사용합니다.
+  function findPreciseServerMs(bodyText) {
+    if (!bodyText) return null;
+
+    // 1) ISO8601 + 소수초 (예: 2026-10-08T07:21:16.123Z)
+    const isoMatch = bodyText.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{1,6}(Z|[+-]\d{2}:?\d{2})/);
+    if (isoMatch) {
+      const ms = Date.parse(isoMatch[0]);
+      if (!isNaN(ms) && Math.abs(ms - Date.now()) < 86400000) return ms;
+    }
+
+    // 2) 13자리 epoch 밀리초로 보이는 숫자 (앞뒤가 숫자가 아닌 경우만, 현재 시각과 하루 이내로 가까운 값)
+    const msCandidates = bodyText.match(/(?<!\d)\d{13}(?!\d)/g);
+    if (msCandidates) {
+      for (const c of msCandidates) {
+        const n = Number(c);
+        if (Math.abs(n - Date.now()) < 86400000) return n;
+      }
+    }
+
+    return null;
+  }
+
   async function measureOnceViaProxy(proxyBase, targetUrl) {
     const u = `${proxyBase}/measure?url=${encodeURIComponent(targetUrl)}&_=${Date.now()}${Math.random()}`;
     const res = await fetch(u, { cache: "no-store" });
     const data = await res.json();
     if (!data.ok) throw new Error(data.error || "프록시 측정 실패");
-    if (!data.serverDate) throw new Error("대상 사이트 응답에서 Date 헤더를 찾지 못했습니다.");
-    const serverMs = Date.parse(data.serverDate);
-    if (isNaN(serverMs)) throw new Error("대상 사이트의 Date 헤더를 해석할 수 없습니다.");
+
+    let serverMs = findPreciseServerMs(data.bodySnippet);
+    let precision = "ms";
+    if (serverMs === null) {
+      if (!data.serverDate) throw new Error("대상 사이트 응답에서 시각 정보를 찾지 못했습니다.");
+      serverMs = Date.parse(data.serverDate);
+      if (isNaN(serverMs)) throw new Error("대상 사이트의 Date 헤더를 해석할 수 없습니다.");
+      precision = "sec"; // Date 헤더뿐이면 초 단위 반올림 오차(최대 ±500ms 가량)가 섞입니다.
+    }
 
     // t1/t2는 프록시(=내 컴퓨터)의 시계 기준이라 브라우저 시계와 동일한 기준입니다.
     const rtt = data.t2 - data.t1;
     const skew = serverMs - (data.t1 + data.t2) / 2;
-    return { rtt, skew };
+
+    // 캐시(CDN) 응답이면 Date/본문 시각이 과거에 멈춰있는 값일 수 있어 측정이 무의미해집니다.
+    const cc = (data.cacheControl || "").toLowerCase();
+    const looksCached =
+      (data.age && Number(data.age) > 1) ||
+      (data.xCache && /hit/i.test(data.xCache)) ||
+      (cc.includes("max-age") && !cc.includes("no-store") && !cc.includes("no-cache") && !cc.includes("private"));
+
+    return { rtt, skew, precision, serverDateRaw: data.serverDate, looksCached };
   }
 
   async function runMeasurement() {
@@ -284,12 +322,42 @@
     latencyMs = avgLatency;
     jitterMs = jitter;
 
+    const allSecPrecision = samples.every((s) => s.precision === "sec");
+    const anyCached = samples.some((s) => s.looksCached);
+    const uniqueServerDates = new Set(samples.filter((s) => s.precision === "sec").map((s) => s.serverDateRaw));
+    const allSameDate = allSecPrecision && uniqueServerDates.size === 1 && samples.length > 3;
+
+    let lines = [
+      `측정 완료 (${N}회, 상위 ${best.length}개 사용)`,
+      `서버가 내 컴퓨터보다 ${avgSkew >= 0 ? avgSkew.toFixed(1) + "ms 빠름" : (-avgSkew).toFixed(1) + "ms 느림"}`,
+      `편도 지연(latency): 약 ${avgLatency.toFixed(1)}ms`,
+      `측정 신뢰 구간(지터): ±${jitter.toFixed(1)}ms (네트워크 상태에 따른 오차 범위)`,
+    ];
+
+    if (allSecPrecision) {
+      lines.push(
+        "",
+        "⚠️ 이 사이트는 밀리초 단위 시각 정보를 주지 않아(HTTP Date 헤더는 초 단위까지만 있음),",
+        "위 오차 값에 최대 ±500ms 가량의 반올림 잡음이 섞여 있을 수 있습니다.",
+        "내 컴퓨터 시계 자체가 정확한지는 time.is 같은 전용 동기화 사이트로 따로 확인하는 걸 추천합니다."
+      );
+    }
+    if (allSameDate) {
+      lines.push(
+        "",
+        `🚨 ${N}번 중 ${samples.length}번의 응답 시각이 전부 똑같습니다 — 실시간 값이 아니라`,
+        "CDN에 캐시된(저장해둔) 오래된 시각일 가능성이 높습니다. 이 사이트에서는 이 방식의 측정을 신뢰하기 어렵습니다."
+      );
+    } else if (anyCached) {
+      lines.push(
+        "",
+        "ℹ️ 일부 응답에 캐시 관련 헤더(Age/Cache-Control 등)가 감지되었습니다.",
+        "측정값이 실시간이 아닐 수 있으니 참고용으로만 보세요."
+      );
+    }
+
     resultEl.classList.remove("error");
-    resultEl.textContent =
-      `측정 완료 (${N}회, 상위 ${best.length}개 사용)\n` +
-      `서버가 내 컴퓨터보다 ${avgSkew >= 0 ? avgSkew.toFixed(1) + "ms 빠름" : (-avgSkew).toFixed(1) + "ms 느림"}\n` +
-      `편도 지연(latency): 약 ${avgLatency.toFixed(1)}ms\n` +
-      `측정 신뢰 구간(지터): ±${jitter.toFixed(1)}ms (네트워크 상태에 따른 오차 범위)`;
+    resultEl.textContent = lines.join("\n");
 
     btn.disabled = false;
     recomputeClickTime();
