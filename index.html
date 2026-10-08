@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>밀리초 클릭 타이머</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d24;
+    --border: #2a2e37;
+    --text: #e8e9ec;
+    --muted: #9aa1ad;
+    --accent: #5b8cff;
+    --good: #35c76a;
+    --warn: #ffb648;
+    --bad: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 16px 64px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+  }
+  .container { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin-bottom: 24px; line-height: 1.5; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 16px;
+  }
+  h2 { font-size: 1rem; margin: 0 0 12px; color: var(--accent); }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin: 10px 0 4px; }
+  input[type="text"], input[type="number"], input[type="datetime-local"] {
+    width: 100%;
+    padding: 8px 10px;
+    background: #0f1115;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  button {
+    margin-top: 12px;
+    padding: 10px 16px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  button:active { opacity: 0.85; }
+  button.secondary { background: #2a2e37; }
+  .row { display: flex; gap: 8px; align-items: flex-end; }
+  .row > div { flex: 1; }
+  #measureResult, #manualNote { font-size: 0.85rem; color: var(--muted); margin-top: 10px; line-height: 1.6; white-space: pre-line; }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+  #clickTimeDisplay {
+    font-size: 1.1rem;
+    font-weight: 700;
+    text-align: center;
+    padding: 14px;
+    border-radius: 8px;
+    background: #0f1115;
+    border: 1px dashed var(--border);
+  }
+  #bigClock {
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    font-size: clamp(1.8rem, 8vw, 3rem);
+    text-align: center;
+    letter-spacing: 1px;
+    padding: 10px 0;
+    transition: color 0.1s, background 0.1s;
+    border-radius: 10px;
+  }
+  #serverClockLine { text-align: center; color: var(--muted); font-size: 0.85rem; margin-top: -4px; margin-bottom: 8px; }
+  #countdown {
+    text-align: center;
+    font-size: 1.2rem;
+    font-weight: 700;
+    font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+    padding: 8px;
+  }
+  .state-far { color: var(--muted); }
+  .state-near { color: var(--warn); }
+  .state-fire { color: var(--good); }
+  .flash { background: rgba(53, 199, 106, 0.18); }
+  .error { color: var(--bad); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⏱ 밀리초 클릭 타이머</h1>
+  <p class="subtitle">
+    내 컴퓨터 시계와 서버 시계의 오차(skew), 그리고 클릭이 서버에 도착하는 데 걸리는 지연(latency)을 측정해서,
+    목표한 서버 시각(예: 정각 00.000)에 맞추려면 <b>내 컴퓨터 시계 기준으로 몇 시 몇 분 몇 초 몇 ms에 눌러야 하는지</b> 계산해줍니다.
+    네트워크는 매번 흔들리기(jitter) 때문에 100% 정확히 맞추는 건 불가능하고, 가장 유리한 타이밍을 알려주는 보조 도구입니다.
+  </p>
+
+  <section>
+    <h2>1. 시간 동기화 측정</h2>
+    <label for="syncUrl">측정용 URL (CORS가 허용된, 응답에 시각 정보가 담긴 엔드포인트)</label>
+    <input type="text" id="syncUrl" value="https://worldtimeapi.org/api/timezone/Etc/UTC">
+    <button id="measureBtn">측정 시작 (11회 반복)</button>
+    <div id="measureResult">아직 측정하지 않았습니다.</div>
+
+    <details>
+      <summary>측정이 안 되거나(CORS 오류 등), 이미 오차/지연 값을 알고 있다면 → 수동 입력</summary>
+      <div class="row">
+        <div>
+          <label for="manualSkew">서버가 내 컴퓨터보다 빠른 정도 (ms, 느리면 음수)</label>
+          <input type="number" id="manualSkew" value="0">
+        </div>
+        <div>
+          <label for="manualLatency">클릭→서버 도착까지 편도 지연시간 (ms)</label>
+          <input type="number" id="manualLatency" value="0">
+        </div>
+      </div>
+      <button class="secondary" id="useManualBtn">이 값 사용하기</button>
+    </details>
+  </section>
+
+  <section>
+    <h2>2. 목표 시각 설정 (서버 기준)</h2>
+    <button id="nextMinuteBtn">다음 정각(0초 000ms)으로 설정</button>
+    <div class="row">
+      <div>
+        <label for="targetDateTime">날짜 / 시:분:초</label>
+        <input type="datetime-local" id="targetDateTime" step="1">
+      </div>
+      <div>
+        <label for="targetMs">밀리초</label>
+        <input type="number" id="targetMs" value="0" min="0" max="999">
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 계산 결과</h2>
+    <div id="clickTimeDisplay">먼저 1번에서 측정(또는 수동 입력)을 완료하세요.</div>
+  </section>
+
+  <section>
+    <h2>4. 실시간 카운트다운</h2>
+    <div id="bigClock">--:--:--.---</div>
+    <div id="serverClockLine">추정 서버 시각: --:--:--.---</div>
+    <div id="countdown" class="state-far">클릭 목표 시각을 계산하면 여기에 남은 시간이 표시됩니다.</div>
+  </section>
+</div>
+
+<script>
+(() => {
+  let skewMs = null;      // 서버시각 - 내시각 (양수면 서버가 빠름)
+  let latencyMs = null;   // 클릭 -> 서버 도착까지 편도 지연
+  let jitterMs = null;    // 측정 신뢰 구간(참고용)
+  let clickTargetLocalMs = null; // 내가 클릭해야 할 로컬 epoch ms
+
+  const $ = (id) => document.getElementById(id);
+
+  function pad(n, len = 2) { return String(n).padStart(len, "0"); }
+  function fmtClock(d) {
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  }
+
+  async function measureOnce(url) {
+    const bust = url + (url.includes("?") ? "&" : "?") + "_=" + Date.now() + Math.random();
+    const t1 = Date.now();
+    const res = await fetch(bust, { cache: "no-store" });
+    const t2 = Date.now();
+
+    let serverMs = null;
+    try {
+      const data = await res.clone().json();
+      const iso = data.utc_datetime || data.datetime || data.dateTime;
+      if (iso) serverMs = Date.parse(iso);
+    } catch (e) { /* not JSON, fall back to header */ }
+
+    if (serverMs === null) {
+      const h = res.headers.get("date");
+      if (h) serverMs = Date.parse(h);
+    }
+    if (serverMs === null) throw new Error("응답에서 서버 시각을 읽을 수 없습니다.");
+
+    const rtt = t2 - t1;
+    const skew = serverMs - (t1 + t2) / 2; // 서버 - 내 시각 (중간 시점 기준 추정)
+    return { rtt, skew };
+  }
+
+  async function runMeasurement() {
+    const url = $("syncUrl").value.trim();
+    const resultEl = $("measureResult");
+    const btn = $("measureBtn");
+    btn.disabled = true;
+    const samples = [];
+    const N = 11;
+
+    for (let i = 0; i < N; i++) {
+      resultEl.textContent = `측정 중... (${i + 1}/${N})`;
+      try {
+        const s = await measureOnce(url);
+        samples.push(s);
+      } catch (e) {
+        resultEl.textContent = `측정 실패: ${e.message}\nCORS 오류일 가능성이 높습니다. 아래 "수동 입력"을 사용하세요.`;
+        resultEl.classList.add("error");
+        btn.disabled = false;
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
+    samples.sort((a, b) => a.rtt - b.rtt);
+    const best = samples.slice(0, Math.max(3, Math.ceil(N / 3)));
+    const avgSkew = best.reduce((s, x) => s + x.skew, 0) / best.length;
+    const avgLatency = best.reduce((s, x) => s + x.rtt, 0) / best.length / 2;
+
+    const rtts = samples.map((s) => s.rtt);
+    const jitter = (Math.max(...rtts) - Math.min(...rtts)) / 2;
+
+    skewMs = avgSkew;
+    latencyMs = avgLatency;
+    jitterMs = jitter;
+
+    resultEl.classList.remove("error");
+    resultEl.textContent =
+      `측정 완료 (${N}회, 상위 ${best.length}개 사용)\n` +
+      `서버가 내 컴퓨터보다 ${avgSkew >= 0 ? avgSkew.toFixed(1) + "ms 빠름" : (-avgSkew).toFixed(1) + "ms 느림"}\n` +
+      `편도 지연(latency): 약 ${avgLatency.toFixed(1)}ms\n` +
+      `측정 신뢰 구간(지터): ±${jitter.toFixed(1)}ms (네트워크 상태에 따른 오차 범위)`;
+
+    btn.disabled = false;
+    recomputeClickTime();
+  }
+
+  function useManualValues() {
+    skewMs = parseFloat($("manualSkew").value) || 0;
+    latencyMs = parseFloat($("manualLatency").value) || 0;
+    jitterMs = null;
+    $("measureResult").classList.remove("error");
+    $("measureResult").textContent =
+      `수동 입력 값 사용 중\n서버가 내 컴퓨터보다 ${skewMs >= 0 ? skewMs + "ms 빠름" : (-skewMs) + "ms 느림"}\n편도 지연: ${latencyMs}ms`;
+    recomputeClickTime();
+  }
+
+  function setNextMinuteTarget() {
+    const now = new Date(Date.now() + (skewMs || 0));
+    const next = new Date(now);
+    next.setSeconds(0, 0);
+    next.setMinutes(next.getMinutes() + 1);
+    const local = new Date(next.getTime() - (skewMs || 0)); // datetime-local 입력란 표시는 로컬 타임존 기준
+    const yyyy = local.getFullYear();
+    const mm = pad(local.getMonth() + 1);
+    const dd = pad(local.getDate());
+    const hh = pad(local.getHours());
+    const mi = pad(local.getMinutes());
+    const ss = pad(local.getSeconds());
+    $("targetDateTime").value = `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}`;
+    $("targetMs").value = 0;
+    recomputeClickTime();
+  }
+
+  function getTargetServerMs() {
+    const dtVal = $("targetDateTime").value;
+    if (!dtVal) return null;
+    const ms = parseInt($("targetMs").value, 10) || 0;
+    const localDate = new Date(dtVal);
+    if (isNaN(localDate.getTime())) return null;
+    // datetime-local 입력은 "서버 시각"으로 간주하고 그대로 사용 (타임존은 로컬과 동일하다고 가정)
+    return localDate.getTime() + ms;
+  }
+
+  function recomputeClickTime() {
+    const disp = $("clickTimeDisplay");
+    if (skewMs === null || latencyMs === null) {
+      disp.textContent = "먼저 1번에서 측정(또는 수동 입력)을 완료하세요.";
+      clickTargetLocalMs = null;
+      return;
+    }
+    const targetServerMs = getTargetServerMs();
+    if (targetServerMs === null) {
+      disp.textContent = "2번에서 목표 시각을 설정하세요.";
+      clickTargetLocalMs = null;
+      return;
+    }
+    // L = T - latency - skew
+    clickTargetLocalMs = targetServerMs - latencyMs - skewMs;
+    const d = new Date(clickTargetLocalMs);
+    let line = `내 컴퓨터 시계로 ${fmtClock(d)} 에 클릭하세요.`;
+    if (jitterMs !== null) {
+      line += `\n(네트워크 지터로 인한 오차 범위: ±${jitterMs.toFixed(1)}ms)`;
+    }
+    disp.textContent = line;
+  }
+
+  function tick() {
+    const nowMs = Date.now();
+    const nowDate = new Date(nowMs);
+    const serverEstDate = new Date(nowMs + (skewMs || 0));
+
+    const clockEl = $("bigClock");
+    clockEl.textContent = fmtClock(nowDate);
+    $("serverClockLine").textContent = skewMs !== null
+      ? `추정 서버 시각: ${fmtClock(serverEstDate)}`
+      : "추정 서버 시각: --:--:--.---";
+
+    const cd = $("countdown");
+    if (clickTargetLocalMs === null) {
+      cd.className = "state-far";
+      cd.textContent = "클릭 목표 시각을 계산하면 여기에 남은 시간이 표시됩니다.";
+      clockEl.classList.remove("flash");
+    } else {
+      const diff = clickTargetLocalMs - nowMs;
+      if (diff > 1000) {
+        cd.className = "state-far";
+        cd.textContent = `남은 시간: ${(diff / 1000).toFixed(2)}초`;
+        clockEl.classList.remove("flash");
+      } else if (diff > 50) {
+        cd.className = "state-near";
+        cd.textContent = `남은 시간: ${diff.toFixed(0)}ms — 준비하세요`;
+        clockEl.classList.remove("flash");
+      } else if (diff > -50) {
+        cd.className = "state-fire";
+        cd.textContent = diff >= 0 ? `지금 클릭! (${diff.toFixed(0)}ms 전)` : `지금 클릭! (${(-diff).toFixed(0)}ms 지남)`;
+        clockEl.classList.add("flash");
+      } else {
+        cd.className = "state-far";
+        cd.textContent = `지나감 (${(-diff).toFixed(0)}ms 전 타이밍이었음)`;
+        clockEl.classList.remove("flash");
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+
+  $("measureBtn").addEventListener("click", runMeasurement);
+  $("useManualBtn").addEventListener("click", useManualValues);
+  $("nextMinuteBtn").addEventListener("click", setNextMinuteTarget);
+  $("targetDateTime").addEventListener("change", recomputeClickTime);
+  $("targetMs").addEventListener("input", recomputeClickTime);
+
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
