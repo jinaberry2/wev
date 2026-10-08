@@ -1,22 +1,27 @@
 @echo off
+setlocal
 cd /d "%~dp0"
 
-where python >nul 2>nul
-if %errorlevel%==0 (
-  python proxy_server.py
-  goto :end
-)
+python --version >nul 2>&1
+if not errorlevel 1 goto RUN_PYTHON
 
-where py >nul 2>nul
-if %errorlevel%==0 (
-  py proxy_server.py
-  goto :end
-)
+py --version >nul 2>&1
+if not errorlevel 1 goto RUN_PY
 
-echo 파이썬이 설치되어 있지 않습니다.
-echo https://python.org 에서 설치한 뒤(설치 화면에서 "Add python.exe to PATH" 체크) 이 파일을 다시 더블클릭하세요.
+echo Python was not found on this computer.
+echo Install it from https://python.org
+echo During setup, check the box "Add python.exe to PATH".
+echo Then double-click this file again.
 pause
 exit /b 1
 
-:end
+:RUN_PYTHON
+python proxy_server.py
+goto END
+
+:RUN_PY
+py proxy_server.py
+goto END
+
+:END
 pause
